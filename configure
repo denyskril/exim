@@ -1,0 +1,572 @@
+#!/bin/sh#############################################################
+#                       GLOBAL CONFIGURATION                         #
+######################################################################
+primary_hostname                        	= co.ids.ua
+smtp_banner 					= "$primary_hostname, ESMTP EXIM $version_number, $tod_full"
+domainlist local_domains                	= ids.ua : co.ids.ua : ids-borjomi.com.ua : kidsmap.com.ua :
+domainlist relay_to_domains			= ids.ua : ids-borjomi.com.ua
+hostlist relay_from_hosts			= 212.82.195.122/32 : localhost : 10.1.1.4/32 : 10.1.1.245/32 : 10.1.1.218/32 : 10.1.21.11/32 : 10.1.4.22/32 : 10.1.4.23/32 : 10.1.22.10 : 10.1.1.151 :
+host_lookup					= !192.168.0.0/16 : !10.0.0.0/8 : *
+daemon_smtp_ports 				= 25 : 465
+acl_smtp_connect				= check_connect
+acl_smtp_helo					= check_helo
+acl_smtp_rcpt					= check_rcpt
+acl_smtp_predata 				= check_predata
+acl_smtp_data 					= check_message
+av_scanner 					= clamd:/var/run/clamav/clamd.sock
+qualify_domain 					= ids-borjomi.com.ua
+exim_user 					= mailnull
+exim_group 					= mailnull
+never_users 					= root
+allow_domain_literals				= false
+rfc1413_hosts 					= *
+rfc1413_query_timeout 				= 0s
+ignore_bounce_errors_after 			= 10m
+retry_data_expire				= 1h
+timeout_frozen_after 				= 2h
+message_size_limit				= 50m
+return_size_limit				= 70k
+smtp_accept_max					= 200
+remote_max_parallel				= 200
+smtp_accept_max_per_host			= 5
+smtp_accept_queue				= 200
+smtp_accept_queue_per_connection		= 200	
+smtp_enforce_sync				= true
+system_filter_pipe_transport			= command_pipe
+system_filter_reply_transport			= remote_smtp
+split_spool_directory 				= true
+tls_on_connect_ports 				= 465	
+tls_certificate					= /usr/local/etc/exim/certs/ids-borjomi.crt
+tls_privatekey					= /usr/local/etc/exim/certs/ids-borjomi.key
+tls_advertise_hosts				= *
+tls_verify_certificates				= *
+domainlist domain_blacklist			= /usr/local/etc/exim/domain_blacklist
+GHBL						= /usr/local/etc/exim/global_helo_black_list
+GSBL						= /usr/local/etc/exim/global_sender_black_list
+GHWL						= /usr/local/etc/exim/global_helo_white_list
+GSWL						= /usr/local/etc/exim/global_sender_white_list
+GHBNL						= /usr/local/etc/exim/global_helo_black_list_negativ
+SPAM_REDIRECT_EMAIL 				= /usr/local/etc/exim/spam_to_this_email
+
+######################################################################
+#                       ACL CONFIGURATION                            #
+#         Specifies access control lists for incoming SMTP mail      #
+######################################################################
+begin acl
+# Проверяем IP в черном списке.
+check_connect:
+	deny 		condition		= ${lookup{$sender_host_name}nwildlsearch{/usr/local/etc/exim/blacklist_host_name}{1}{0}}
+			message  		= "ERROR. Blacklisted [$sender_host_name] (01)"
+			log_message		= "ERROR. Blacklisted [$sender_host_name] (01)"
+
+	deny		hosts			= /usr/local/etc/exim/connect_ip_black.list : 
+			message			= "ERROR. You IP [$sender_host_address] has been blacklisted. (02)"
+			log_message		= "ERROR. You IP [$sender_host_address] has been blacklisted. (02)"
+
+	accept
+# Просим прислать сначала HELO/EHLO.
+check_helo:
+	deny		condition		= ${if eq{$sender_helo_name}{}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Send HELO/EHLO first. (11)"
+			log_message		= "ERROR. Send HELO/EHLO first. (11)"
+			
+	deny 		condition		=  ${lookup{$sender_helo_name}nwildlsearch{/usr/local/etc/exim/blacklist_helo}{1}{0}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Blacklisted HELO/EHLO received $sender_host_address (12)"
+			log_message		= "ERROR. Blacklisted HELO/EHLO received $sender_host_address (12)"
+	
+	deny 		condition		= ${if match{$sender_helo_name}{\N^\d+$\N}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Bad HELO/EHLO received IP $sender_host_address (13)"
+			log_message		= "ERROR. Bad HELO/EHLO received IP $sender_host_address (13)"
+	
+	deny 		condition 		= ${if match{$sender_address}{\N^\s+$\N}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Bad HELO/EHLO received IP $sender_host_address (14)"
+			log_message		= "ERROR. Bad HELO/EHLO received IP $sender_host_address (14)"
+			
+	deny 		condition 		= ${if match{$sender_helo_name}{\N^\[?\d+\.\d+\.\d+\.\d+\]?$\N}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Bad HELO/EHLO received IP $sender_host_address (15)"
+			log_message		= "ERROR. Bad HELO/EHLO received IP $sender_host_address (15)"
+	
+	deny 		condition 		= ${if match{$sender_helo_name}{\N\.\N}{no}{yes}}
+			hosts			= !+relay_from_hosts
+			message			= "ERROR. Bad HELO/EHLO received IP $sender_host_address (16)"
+			log_message		= "ERROR. Bad HELO/EHLO received IP $sender_host_address (16)"
+	
+	deny 		condition 		= ${if eq{$sender_helo_name}{$interface_address}{yes}{no}}
+			message			= "ERROR. Bad HELO/EHLO received IP $sender_host_address (17)"
+			log_message		= "ERROR. Bad HELO/EHLO received IP $sender_host_address (17)"
+	
+	deny 		condition 		= ${if eq{$sender_helo_name}{}{yes}{no}}
+			!senders  		= :
+			message			= "ERROR. HELO/EHLO required by SMTP RFC IP $sender_host_address (18)"
+			log_message		= "ERROR. HELO/EHLO required by SMTP RFC IP $sender_host_address (18)"	
+	
+	deny		condition		= ${if match{$sender_helo_name}{\N^[A-Za-z0-9\_\-\ ]+$\N}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			!senders		= :
+			!authenticated		= *
+			message			= "ERROR. Can not be only letters, numbers, -, _, space in HELO/EHLO. See SMTP RFC (19)"
+			log_message		= "ERROR. Can not be only letters, numbers, -, _, space in HELO/EHLO. See SMTP RFC: [SH=$sender_host_address S=$sender_address HELO=$sender_helo_name LPLD=$local_part@$domain] (19)"
+	
+	accept
+
+check_rcpt:
+# Принимаем письма от postmaster и abuse.
+	accept		local_parts 		= postmaster : abuse
+			domains			= +local_domains
+			log_message		= ACCEPT. FROM=$sender_address TO=$local_part@$domain system email
+	
+# Принимаем письма из белого списка HELO.
+	accept		condition		= ${lookup {$sender_helo_name}nwildlsearch{GHWL}{yes}{no}}
+			message			= ACCEPT. HELO/EHLO ($sender_helo_name) accept by "white list".
+			log_message		= ACCEPT. FROM=$sender_address TO=$local_part@$domain HELO ($sender_helo_name) in my global HELO white list.
+
+# Принимаем письма из белого списка отправителей.
+	accept		condition		= ${lookup {$sender_address}nwildlsearch{GSWL}{yes}{no}}
+			message			= ACCEPT. Sender ($sender_address) accept by white list.
+			log_message		= ACCEPT. FROM=$sender_address TO=$local_part@$domain Sender in my global sender white list.
+# SPF check
+#	deny 		!authenticated 		= *
+#			hosts			= !+relay_from_hosts
+#			spf 			= fail
+#			message 		= "ERROR. SPF check failed. $sender_host_address is not allowed to send mail from $sender_address_domain"
+#			log_message		= "ERROR. SPF check failed. $sender_host_address is not allowed to send mail from $sender_address_domain"
+
+#	warn 		hosts			= !+relay_from_hosts
+#			message 		= $spf_received
+#			log_message		= $spf_received
+# .	
+	deny		domains			= +domain_blacklist
+			message			= "ERROR. Domain has been blacklisted." 
+			log_message		= "ERROR. Domain has been blacklisted."
+			
+	deny 		condition 		= ${if or{{eq{$sender_address}{$local_part@$domain}}{eq{$sender_address_domain}{$domain}}}}
+			hosts			= !+relay_from_hosts
+			domains			= +local_domains
+			message 		= "ERROR. The same local addresses or domain in MAIL FROM and RCPT TO from nonlocal relay."
+			log_message		= "ERROR. The same local addresses or domain in MAIL FROM and RCPT TO from nonlocal relay."
+# Отбрасываем письма, которые отправляются не с relay_from_hosts
+	drop		hosts			= !+relay_from_hosts
+			condition		= ${if eq{$sender_address_domain}{ids.ua : co.ids.ua : ids-borjomi.com.ua}}
+			domains			= +local_domains
+			message			= "ERROR. FROM=$sender_address TO=$local_part@$domain , my domain from outside denied."
+			log_message		= "ERROR. FROM=$sender_address TO=$local_part@$domain , my domain from outside denied."
+# Отбрасыыываем письма, которые адресованы локальным группам рассылки.
+	deny 		!hosts			= +relay_from_hosts : 127.0.0.1
+			domains			= +local_domains
+			!senders		= kril.denis@gmail.com
+			local_parts 		= fin : hr : central.office : it : yurotdel : marketing : CO_Accounting : usersupport : helpdesk2
+			message			= "ERROR. You aren't allowed to send mail to this address."
+			log_message		= "ERROR. You aren't allowed to send mail to this address." 
+# Отбрасываем письма, если отправитель равен получателю.
+	deny		condition		= ${if eq{$sender_address}{$local_part@$domain}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			!senders		= :
+			message			= "ERROR. Sender and recipient is equivalent."
+			log_message		= "ERROR. Sender and recipient is equivalent. $sender_address = $local_part@$domain"
+	
+# Отбрасываем письма, у которых нет FQDN.
+	deny		condition		= ${if isip{$sender_helo_name}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= ERROR. HELO/EHLO ($sender_helo_name) is not FQDN, send FQDN in HELO/EHLO.
+			log_message		= ERROR. FROM=$sender_address TO=$local_part@$domain  HELO ($sender_helo_name) not FQDN.
+# Отбрасываем письма, которые находятся в списке Backscatter.	
+#	deny 		senders 		= :
+#			dnslists 		= ips.backscatterer.org
+#			message 		= ERROR. Backscatter: $dnslist_text
+#			log_message 		= ERROR. Backscatter: $dnslist_text
+# Отбрасываем письма, которые находятся в черном списке.
+	drop		condition		= ${lookup {$sender_helo_name}nwildlsearch{GHBL}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= ERROR. HELO/EHLO ($sender_helo_name) dont look like good sender, use you ISP relay.
+			log_message		= ERROR. FROM=$sender_address TO=$local_part@$domain HELO ($sender_helo_name) match global helo black list.
+# Отбрасываем письма, которые находятся в глобальном черном списке.
+	deny		condition		= ${lookup {$sender_helo_name}nwildlsearch{GHBNL}{no}{yes}}
+			hosts			= !+relay_from_hosts
+			message			= ERROR. HELO ($sender_helo_name) in my global black list.
+			log_message		= ERROR. FROM=$sender_address TO=$local_part@$domain HELO ($sender_helo_name) match global helo black negative list.
+# Отбрасываем письма, отправитель которых находится в черном списке.
+	deny		condition		=  ${lookup {$sender_address}nwildlsearch{GSBL}{yes}{no}}
+			hosts			= !+relay_from_hosts
+			message			= ERROR. Sender ($sender_address) is not trusted for process you mail.
+			log_message		= ERROR. FROM=$sender_address TO=$local_part@$domain global sender black list.
+
+	accept		hosts			= :
+			log_message		= ACCEPT. FROM=$sender_address TO=$local_part@$domain ricochet
+
+	accept		hosts			= +relay_from_hosts
+			log_message		= ACCEPT. FROM=$sender_address TO=$local_part@$domain trust net
+# 
+	defer 		senders 		= :
+			condition 		= ${if >{$rcpt_count}{1}{1}}
+			message 		= "ERROR. Only one recipient accepted for NULL sender (bounced message) $sender_host_name"
+			log_message		= "ERROR. Only one recipient accepted for NULL sender (bounced message) $sender_host_name"
+# Отбрасываем письма, в которых два и более получателя не существуют.
+	deny 		condition		= ${if >{$rcpt_fail_count}{2}{yes}{no}}
+			message 		= "ERROR. Too many errors or unknown recipients received from $sender_host_address"
+			log_message		= "ERROR. Too many errors or unknown recipients received from $sender_host_address"
+# Отбрасываем письма, если в адресе есть недопустимые символы.
+	deny		domains			= +local_domains
+			local_parts		= ^[.] : ^.*[@%!/|]
+			message 		= "ERROR. Not allowed symbols in domain name."
+			log_message		= "ERROR. Not allowed symbols in domain name."
+# Отбрасываем письма, если в адресе есть недопустимые символы.
+	deny		domains			= !+local_domains
+			local_parts		= ^[./|] : ^.*[@%!] : ^.*/\\.\\./
+			message 		= "ERROR. Wrong symbols in email address."
+			log_message		= "ERROR. Wrong symbols in email address."
+
+	warn		verify			= reverse_host_lookup
+                        hosts           	= !+relay_from_hosts : +include_unknown : *
+			delay			= 8s
+
+# Считем число точек или дефисов в доменном имени. (больше 5-х - в топку)
+  	warn    	condition		= ${if match{$sender_host_name}{\N((?>\w+[\.|\-]){5,})\N}{yes}{no}}
+	  		hosts         		= !+relay_from_hosts : *
+	  		set acl_m0		= ${eval:$acl_m0+40}
+	  		message			= "WARNING. Wrong address $sender_host_name."
+	  		log_message		= "WARNING. Wrong address $sender_host_name."
+	  		
+# Ограничиваем колличество получателей до 20-ти
+	drop		condition		= ${if > {$rcpt_count}{20}}
+                        hosts           	= !+relay_from_hosts : +include_unknown : *
+			message			= "ERROR. I dont take more than 20 RCPTs."
+			log_message		= "ERROR. I dont take more than 20 RCPTs."
+ 
+# Отбрасываем письма, если у сервера отправителя нет RDNS
+	defer		condition 		= ${if and{{def:sender_host_address}{!def:sender_host_name}}{yes}{no}}
+			!hosts 			= +relay_from_hosts
+			!authenticated 		= *
+#			set acl_m5 		= $sender_host_address
+#			set acl_m_greyfile 	= /usr/local/etc/exim/greylist/${length_255:${sg{$sender_host_address}{\N\.\d+$\N}{}},${sg{$sender_address,$local_part@$domain}{\N[^\w.,=@-]\N}{}}}
+			message			= ERROR. X-Host-Lookup-Failed: Reverse DNS lookup ${if eq{$host_lookup_failed}{1}{failed}{deferred}} for $sender_host_address $sender_host_name
+			log_message		= ERROR. X-Host-Lookup-Failed: Reverse DNS lookup ${if eq{$host_lookup_failed}{1}{failed}{deferred}} for $sender_host_address $sender_host_name
+			
+# Отбрасываем письма, если IP-адрес отправителя находится в блек-листах. 
+	drop		dnslists		= rabl.nuclearelephant.com : cbl.abuseat.org : sbl-xbl.spamhaus.org : bl.spamcop.net : zen.spamhaus.org
+                        hosts           	= !+relay_from_hosts : +include_unknown : *
+			delay			= 8s
+			message			= ERROR. Rejected, because $sender_host_address is in a blacklist at $dnslist_domain.\n$dnslist_text
+			log_message		= ERROR. Found in $dnslist_domain. $dnslist_text
+# Отбрасываем письма, если IP-адрес отправителя находится в блек-листах.
+#	defer		dnslists		= dnsbl.sorbs.net : rabl.nuclearelephant.com : cbl.abuseat.org : dnsbl.njabl.org : dul.ru : sbl-xbl.spamhaus.org : dnsbl.njabl.org : bl.spamcop.net : zen.spamhaus.org
+#			hosts			= !+relay_from_hosts : +include_unknown : *
+##			domains 		= +use_rbl_domains
+#			!authenticated 		= *
+#			set acl_m_greyfile 	= /usr/local/etc/exim/greylist/${length_255:${sg{$sender_host_address}{\N\.\d+$\N}{}},${sg{$sender_address,$local_part@$domain}{\N[^\w.,=@-]\N}{}}}
+#			set acl_c_grey_result 	= ${if exists{$acl_m_greyfile}{${if >{${eval:$tod_epoch-${extract{mtime}{${stat:$acl_m_greyfile}}}}}{180}{0}{1}}}{${if eq{${run{/usr/bin/touch $acl_m_greyfile}}}{}{1}{1}}}}
+#			condition 		= $acl_c_grey_result
+#			message 		= "ERROR. Deferred, because $sender_host_address is in a blacklist at $dnslist_domain.\n$dnslist_text (2)"
+#			log_message		= "ERROR. Found in $dnslist_domain. $dnslist_text (2)"
+# Ratelimit bounced messages for recipient.
+	warn 		hosts 			= !+relay_from_hosts : 
+			senders 		= :
+			ratelimit 		= 2 / 30m / per_rcpt / $local_part@$domain
+			set acl_m3 		= $local_part@$domain
+			message 		= "WARNING. Bounce messages rate exceeds per $sender_rate_period for $sender_host_address"
+			log_message 		= "WARNING. Bounce messages rate exceeds per $sender_rate_period for $sender_host_address"
+	
+#	deny 		hosts 			= !+relay_from_hosts : *
+#			recipients		= deniss@ids.ua : 
+#			verify 			= not_blind
+#			message			= "ERROR. Administrative denied 'blind' ('hidden') copy messages"
+#			log_message		= "ERROR. Administrative denied 'blind' ('hidden') copy messages"
+	
+# Greylist
+	defer		condition 		= ${if eq{$received_protocol}{smtp}}
+			condition 		= ${if def:acl_m5}
+			condition 		= ${if def:sender_address}
+			condition 		= ${if !match{$sender_address}{verif|callout|postmaster}}
+			set acl_m_greyfile 	= /usr/local/etc/exim/greylist/${length_255:${sg{$sender_host_address}{\N\.\d+$\N}{}},${sg{$sender_address,$local_part@$domain}{\N[^\w.,=@-]\N}{}}}
+			set acl_c_grey_result 	= ${if exists{$acl_m_greyfile}{${if >{${eval:$tod_epoch-${extract{mtime}{${stat:$acl_m_greyfile}}}}}{180}{0}{1}}}{${if eq{${run{/usr/bin/touch $acl_m_greyfile}}}{}{1}{1}}}}
+			condition 		= $acl_c_grey_result
+			message			= ERROR. Temporary error, please try again later.
+			log_message		= ERROR. Greylisted, because of protocol SMTP or host lookup failed $sender_host_name
+			
+	accept		domains			= +local_domains : ids-borjomi.com.ua :
+			log_message		= ACCEPT (01). FROM=$sender_address TO=$local_part accept local
+			endpass 	
+			message			= Unknown user.
+			verify			= recipient
+
+	accept		domains			= +relay_to_domains
+			log_message		= ACCEPT. FROM=$sender_addres TO=$local_part accept to local.
+			endpass	
+			verify			= recipient
+			message			= "ERROR. Unrouteable address."
+			log_message		= "ERROR. Unrouteable address."
+
+	accept		authenticated		= *
+	
+	accept  	hosts         		= +relay_from_hosts
+	
+	accept 		hosts 			= +relay_hosts
+			endpass
+			verify 			= recipient/callout=20s/callout_defer_ok
+			message			= "ERROR. Recipient callout failed."
+			log_message		= "ERROR. Recipient callout failed."
+	
+	deny		message			= "ERROR. Relay not permitted."
+
+######################################################################
+#                         PREDATA CONFIGURATION                      #
+######################################################################
+check_predata:
+	deny 		condition 		= ${if match{$recipients}{Mailer-Daemon}{yes}{no}}
+			message			= "ERROR. Unknown user. Sender $sender_host_address (Mailer-Daemon)"
+			log_message		= "ERROR. Unknown user. Sender $sender_host_address (Mailer-Daemon)"
+	
+	accept		senders			= : 
+			message			= "ERROR. Sender unknown."
+			log_message		= "ERROR. Sender unknown."
+			
+	
+	defer 		condition 		= ${if def:acl_m3 {1}}
+			message			= "Bounce messages rate exceeds per $sender_rate_period for $acl_m3"
+			log_message		= "Bounce messages rate exceeds per $sender_rate_period for $acl_m3"
+			
+	defer 		condition 		= ${if def:acl_m5{1}}
+			!hosts 			= +relay_from_hosts
+			!authenticated 		= *
+			set acl_c_grey_result 	= ${if exists{$acl_m_greyfile}{${if >{${eval:$tod_epoch-${extract{mtime}{${stat:$acl_m_greyfile}}}}}{180}{0}{1}}}{${if eq{${run{/usr/bin/touch $acl_m_greyfile}}}{}{1}{1}}}}
+			condition 		= $acl_c_grey_result
+			message			= "ERROR. Greylisted. (No hostname or RDNS for $acl_m5)"
+			log_message		= "ERROR. Greylisted. (No hostname or RDNS for $acl_m5)"
+
+	accept
+######################################################################
+#                         DATA CONFIGURATION                         #
+######################################################################
+check_message:
+
+	deny 		demime 			= *
+			malware 		= *
+			message			= "ERROR. Rejected. Message contains a virus or other harmful content ($malware_name)"
+			log_message		= "ERROR. Rejected. Message contains a virus or other harmful content ($malware_name)"
+			
+	deny 		demime 			= prf:exe:com:vbs:bat:pif:scr:js:cab:wsh:msi:hta:vb:vbe:jse:cpl:reg:msp:msi:mst:cmd:ocx:chm
+			hosts 			= !+relay_from_hosts
+			message			= "ERROR. Rejected. Message contains an attachment of a type which we do not accept (.$found_extension)"
+			log_message		= "ERROR. Rejected. Message contains an attachment of a type which we do not accept (.$found_extension)"
+	
+	deny 		regex 			= ^(?i)Content-Disposition::(.*?)filename=\\s*"+((\{[a-hA-H0-9-]{25,}\})|((.*?)\\s{10,}(.*?)))"+\$
+			message			= "ERROR. Rejected. Hiding of file extensions is not allowed"
+			log_message		= "ERROR. Dangerous extension (CLSID hidden)"
+# Если нет "реального"(т.е. Mailer-Daemon и т.п.) отправителя для bounce сообщений - то deny.
+	deny 		senders 		= :
+			!verify 		= header_sender
+			message			= "ERROR. A valid sender header is required for bounces."
+			log_message 		= "ERROR. A valid sender header is required for bounces."
+			
+#	deny		hosts			= !+relay_from_hosts
+#			!verify			= header_syntax
+#			message			= "ERROR. Rejected. Incorrect headers syntax"
+##			log_message		= "ERROR. Rejected. Incorrect headers syntax"
+			
+#	deny		condition		= ${if !match{$message_body}{X-Bounce-ID}{yes}{no}}
+#			condition		= ${if eq{$sender_address}{}{yes}{no}}
+#			message			= "ERROR. Message that generate bounce not coming from main hosts"
+#			log_message		= "ERROR. Message that generate bounce not coming from main hosts"
+	
+	accept
+
+######################################################################
+#                      ROUTERS CONFIGURATION                         #
+#               Specifies how addresses are handled                  #
+######################################################################
+begin routers
+#disclaimer:
+#	driver					= dnslookup
+#	domains					= !+local_domains
+#	transport				= disclaimer_smtp
+
+
+# Доставка для локального домена.
+localdelivery:
+	domains 				= co.ids.ua :
+	driver 					= accept
+	transport 				= local_delivery
+	no_more
+# Релей для Microsoft Exchange
+#relaytoexch1:
+#	domains					= ids.ua
+#	driver 					= manualroute
+#	transport 				= remote_smtp
+#	route_data 				= "10.1.1.19"
+#	no_more
+
+relaytoexch:
+	domains					= ids-borjomi.com.ua
+	driver					= manualroute
+	transport				= remote_smtp
+	route_data				= "10.1.1.4"
+	no_more
+
+#bounce_killer:
+#	senders 				= :
+#	domains 				= !+local_domains
+#	driver 					= redirect
+#	allow_fail
+#	data 					= :fail: bounce ignored
+#	no_more
+#	no_verify
+
+dnslookup:
+	driver 					= dnslookup
+	domains 				= ! +local_domains
+	transport 				= remote_smtp
+	ignore_target_hosts 			= 0.0.0.0 : 127.0.0.0/8
+	no_more
+
+
+
+system_aliases:
+	driver 					= redirect
+  	allow_fail
+  	allow_defer
+  	data 					= ${lookup{$local_part}lsearch{/etc/aliases}}
+  	user 					= mailnull
+  	group 					= mail
+  	file_transport 				= address_file
+  	pipe_transport 				= address_pipe
+
+
+
+userforward:
+	driver 					= redirect
+  	check_local_user
+#	local_part_suffix 			= +* : -*
+#	local_part_suffix_optional
+	file 					= $home/.forward
+#	allow_filter
+	no_verify
+	no_expn
+	check_ancestor
+	file_transport 				= address_file
+	pipe_transport 				= address_pipe
+	reply_transport 			= address_reply
+	condition 				= ${if exists{$home/.forward}{yes}{no}}
+
+localuser:
+	driver 					= accept
+	check_local_user
+#	local_part_suffix 			= +* : -*
+#	local_part_suffix_optional
+	transport 				= local_delivery
+	cannot_route_message 			= Unknown user
+
+
+
+######################################################################
+#                      TRANSPORTS CONFIGURATION                      #
+######################################################################
+
+begin transports
+
+local_file_delivery:
+	driver 					= appendfile
+	file 					= /var/mail/$local_part
+	return_path_add
+	delivery_date_add
+	envelope_to_add
+	group 					= mail
+	user 					= $local_part
+
+remote_smtp:
+	driver 					= smtp
+#	headers_add				= "X-Bounce-ID: $primary_hostname"
+
+
+local_delivery:	
+	driver 					= appendfile
+	directory				= /usr/home/${local_part}/Maildir
+	delivery_date_add
+	envelope_to_add
+	return_path_add
+	group 					= mail
+	maildir_format	
+	maildir_tag				= ,S=$message_size
+	message_prefix				= ""
+	message_suffix				= ""
+	user 					= $local_part
+	mode 					= 0660
+	no_mode_fail_narrower
+
+
+
+address_pipe:
+	driver 					= pipe
+	return_output
+
+
+address_file:
+	driver 					= appendfile
+	delivery_date_add
+	envelope_to_add
+	return_path_add
+
+
+address_reply:
+	driver 					= autoreply
+
+
+#disclaimer_smtp:
+#	driver 					= smtp
+#	transport_filter 			= /usr/local/bin/altermime --input=- --disclaimer=/usr/local/etc/exim/disclaimer.txt --disclaimer-html=/usr/local/etc/exim/disclaimer.html
+#	size_addition 				= 1
+
+######################################################################
+#                      RETRY CONFIGURATION                           #
+######################################################################
+begin retry
+# Address or Domain    Error       Retries
+# -----------------    -----       -------
+*                      *           F,2h,15m; G,16h,1h,1.5; F,4d,6h
+
+######################################################################
+#                      REWRITE CONFIGURATION                         #
+######################################################################
+begin rewrite
+admin@ids.ua 		igor.sichkar@ids-borjomi.com.ua
+kazna@ids.ua		igor.sichkar@ids-borjomi.com.ua
+kzn@ids.ua		igor.sichkar@ids-borjomi.com.ua
+igor.sichkar@ids.ua	igor.sichkar@ids-borjomi.com.ua
+sechkar.igor@ids.ua	igor.sichkar@ids-borjomi.com.ua
+sichkar.igor@ids.ua	igor.sichkar@ids-borjomi.com.ua
+deniss@ids.ua		denis.kril@ids-borjomi.com.ua
+krill.denis@ids.ua	denis.kril@ids-borjomi.com.ua
+admin@ids-borjomi.com.ua denis.kril@ids-borjomi.com.ua
+ids@ids.ua		viktoriya.anikeenko@ids-borjomi.com.ua
+support@kidsmap.com.ua 	kidsmap@ids-borjomi.com.ua
+s.gutsman@ids.ua 	s.gutsman@ids-service.com.ua
+dimura.larisa@ids.ua	larisa.dimura@ids-borjomi.com.ua
+a.kharko@ids.ua		a.kharko@ids-service.com.ua
+l.targonina@ids.ua	l.targonina@ids-service.com.ua
+#########################################
+# Флаги                                 #
+#########################################
+# E ----> все поля конверта             #
+# F ----> поле "From" в конверте        #
+# T ----> поле "To" в конверте          #
+# b ----> заголовок "Bcc:"              #
+# c ----> заголовок "Cc:"               #
+# f ----> заголовок "From:"             #
+# h ----> все заголовки                 #
+# r ----> заголовок "Reply-To:"         #
+# s ----> заголовок "Sender:"           #
+# t ----> заголовок "To:"               #
+#########################################
+
+######################################################################
+#                   AUTHENTICATION CONFIGURATION                     #
+######################################################################
+begin authenticators
+
+######################################################################
+#                   CONFIGURATION FOR local_scan()                   #
+######################################################################
+# begin local_scan
